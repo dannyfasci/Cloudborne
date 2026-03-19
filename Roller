@@ -1,0 +1,250 @@
+import random
+import streamlit as st
+
+BASE_BANDS = {
+    0.0: (7, 7),
+    0.5: (7, 8),
+    1.0: (6, 8),
+    1.5: (6, 9),
+    2.0: (5, 9),
+    2.5: (5, 10),
+    3.0: (4, 10),
+    3.5: (4, 11),
+    4.0: (3, 11),
+    4.5: (3, 12),
+}
+
+RELATIVE_DIFFICULTY_SHIFTS = {
+    "Easy": 1.0,
+    "Normal": 0.0,
+    "Hard": -1.0,
+}
+
+USER_DIFFICULTY_SHIFTS = {
+    "Easy": 2,
+    "Normal": 0,
+    "Hard": -2,
+}
+
+
+def roll_2d6():
+    die1 = random.randint(1, 6)
+    die2 = random.randint(1, 6)
+    return die1, die2, die1 + die2
+
+
+def user_skill_to_internal(user_skill):
+    return round((user_skill - 1) * 0.5, 1)
+
+
+def get_display_effective_user_level(user_skill, difficulty_name):
+    shifted = user_skill + USER_DIFFICULTY_SHIFTS[difficulty_name]
+    return max(1, min(10, shifted))
+
+
+def build_roll_sequence(start_band):
+    if start_band not in BASE_BANDS:
+        raise ValueError("Invalid starting band.")
+
+    sequence = []
+    current = start_band
+
+    while current >= 0:
+        sequence.append(round(current, 1))
+        current -= 1.0
+
+    return sequence
+
+
+def get_effective_start_band(skill, difficulty_name):
+    shift = RELATIVE_DIFFICULTY_SHIFTS[difficulty_name]
+    shifted = round(skill + shift, 1)
+    shifted = max(0.0, min(4.5, shifted))
+    return shifted
+
+
+def init_state():
+    defaults = {
+        "sequence": [],
+        "current_index": 0,
+        "user_skill": None,
+        "skill": None,
+        "effective_start_band": None,
+        "display_effective_user_level": None,
+        "difficulty": None,
+        "check_active": False,
+        "chain_count": 0,
+        "crit_count": 0,
+        "log": [],
+        "status_text": "",
+        "status_type": "info",
+    }
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+
+
+def reset_check():
+    st.session_state.sequence = []
+    st.session_state.current_index = 0
+    st.session_state.user_skill = None
+    st.session_state.skill = None
+    st.session_state.effective_start_band = None
+    st.session_state.display_effective_user_level = None
+    st.session_state.difficulty = None
+    st.session_state.check_active = False
+    st.session_state.chain_count = 0
+    st.session_state.crit_count = 0
+    st.session_state.log = []
+    st.session_state.status_text = ""
+    st.session_state.status_type = "info"
+
+
+def start_check(user_skill, difficulty):
+    skill = user_skill_to_internal(user_skill)
+    effective_start_band = get_effective_start_band(skill, difficulty)
+    sequence = build_roll_sequence(effective_start_band)
+    display_effective_user_level = get_display_effective_user_level(user_skill, difficulty)
+
+    st.session_state.sequence = sequence
+    st.session_state.current_index = 0
+    st.session_state.user_skill = user_skill
+    st.session_state.skill = skill
+    st.session_state.effective_start_band = effective_start_band
+    st.session_state.display_effective_user_level = display_effective_user_level
+    st.session_state.difficulty = difficulty
+    st.session_state.check_active = True
+    st.session_state.chain_count = 0
+    st.session_state.crit_count = 0
+    st.session_state.log = []
+    st.session_state.status_text = ""
+    st.session_state.status_type = "info"
+
+    roll_next_step()
+
+
+def finish_check(success, ended_on):
+    st.session_state.check_active = False
+    if success:
+        st.session_state.log.append(f"Chain Complete on Roll {ended_on}")
+        st.session_state.status_text = f"Chain Complete on Roll {ended_on}"
+        st.session_state.status_type = "success"
+    else:
+        st.session_state.status_text = f"Chain Broken on Roll {ended_on}"
+        st.session_state.status_type = "error"
+
+
+def roll_next_step():
+    if not st.session_state.check_active:
+        return
+
+    if st.session_state.current_index >= len(st.session_state.sequence):
+        finish_check(True, st.session_state.current_index)
+        return
+
+    band = st.session_state.sequence[st.session_state.current_index]
+    low, high = BASE_BANDS[band]
+
+    effective_user_level = max(
+        1,
+        st.session_state.display_effective_user_level - st.session_state.current_index * 2
+    )
+
+    die1, die2, total = roll_2d6()
+    roll_number = st.session_state.current_index + 1
+    crit = (total == 7)
+
+    st.session_state.log.append(f"Roll {roll_number}")
+    st.session_state.log.append(
+        f"Effective Level: {effective_user_level} ({st.session_state.difficulty})"
+    )
+    st.session_state.log.append(f"Success Range: {low}-{high}")
+    st.session_state.log.append(f"Rolled: {die1} + {die2} = {total}")
+
+    if crit:
+        st.session_state.crit_count += 1
+        st.session_state.log.append(
+            f"CRIT! Rolled a 7. Total Crits: {st.session_state.crit_count}"
+        )
+
+    if low <= total <= high:
+        st.session_state.log.append("Result: Success")
+        st.session_state.log.append("")
+
+        st.session_state.current_index += 1
+        st.session_state.chain_count += 1
+
+        if st.session_state.current_index < len(st.session_state.sequence):
+            if crit:
+                st.session_state.status_text = (
+                    f"Crit Success on Roll {roll_number}. Press Chain Up to continue."
+                )
+            else:
+                st.session_state.status_text = (
+                    f"Success on Roll {roll_number}. Press Chain Up to continue."
+                )
+            st.session_state.status_type = "success"
+        else:
+            finish_check(True, roll_number)
+    else:
+        st.session_state.log.append("Result: Failure")
+        st.session_state.log.append(f"Chain Broken on Roll {roll_number}")
+        st.session_state.log.append("")
+
+        st.session_state.chain_count = 0
+        finish_check(False, roll_number)
+
+
+init_state()
+
+st.set_page_config(page_title="Skill Check Roller", page_icon="🎲", layout="centered")
+st.title("🎲 Skill Check Roller")
+
+col1, col2 = st.columns(2)
+with col1:
+    user_skill = st.selectbox("Skill Level", list(range(1, 11)), index=0)
+with col2:
+    difficulty = st.selectbox("Relative Difficulty", ["Easy", "Normal", "Hard"], index=1)
+
+button_col1, button_col2, button_col3 = st.columns(3)
+
+with button_col1:
+    if st.button("Start Check", use_container_width=True):
+        start_check(user_skill, difficulty)
+
+with button_col2:
+    chain_disabled = not st.session_state.check_active
+    if st.button("Chain Up", disabled=chain_disabled, use_container_width=True):
+        roll_next_step()
+
+with button_col3:
+    if st.button("Reset", use_container_width=True):
+        reset_check()
+
+counter_col1, counter_col2 = st.columns(2)
+with counter_col1:
+    st.metric("Chain Counter", st.session_state.chain_count)
+with counter_col2:
+    st.metric("Crit Counter", st.session_state.crit_count)
+
+st.subheader("Current Check")
+if st.session_state.user_skill is not None:
+    st.write(f"**Skill:** {st.session_state.user_skill}")
+    st.write(f"**Relative Difficulty:** {st.session_state.difficulty}")
+    st.write(f"**Effective Level:** {st.session_state.display_effective_user_level}")
+else:
+    st.write("Choose a skill and relative difficulty, then press Start Check.")
+
+if st.session_state.status_text:
+    if st.session_state.status_type == "success":
+        st.success(st.session_state.status_text)
+    elif st.session_state.status_type == "error":
+        st.error(st.session_state.status_text)
+    else:
+        st.info(st.session_state.status_text)
+
+st.subheader("Roll Log")
+if st.session_state.log:
+    st.text("\n".join(st.session_state.log))
+else:
+    st.text("No rolls yet.")
